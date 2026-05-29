@@ -23,20 +23,35 @@ namespace BlobPreviz
             _agent = GetComponentInParent<NavMeshAgent>();
 
             if (_agent == null)
+            {
                 Debug.LogError("[RootMotionToNavMesh] No NavMeshAgent found in parent.", this);
+                return;
+            }
 
-            // We handle application manually in OnAnimatorMove.
+            // Disable applyRootMotion — we apply the delta ourselves in OnAnimatorMove.
             _animator.applyRootMotion = false;
+
+            // Stop the agent from moving the transform. We do that via root motion.
+            // This also means desiredVelocity is driven purely by the path, not actual
+            // movement — so NpcWanderer can read it immediately to bootstrap the blend tree.
+            _agent.updatePosition = false;
         }
+
+        // --- Starter Assets animation event stubs ---
+        // The walk/run animations fire these events. Without a receiver Unity spams warnings.
+        void OnFootstep(AnimationEvent e) { }
+        void OnLand(AnimationEvent e)     { }
 
         // Called by Unity every frame after the Animator updates, regardless of applyRootMotion.
         void OnAnimatorMove()
         {
             if (_agent == null || !_agent.isOnNavMesh) return;
 
-            // Hand the root-motion delta to the agent as a velocity.
-            // The agent uses this for movement while still steering via its own path.
-            _agent.velocity = _animator.deltaPosition / Time.deltaTime;
+            // Apply root motion to the transform ourselves.
+            transform.position += _animator.deltaPosition;
+
+            // Keep the agent's internal position in sync so steering stays accurate.
+            _agent.nextPosition = transform.position;
         }
     }
 }

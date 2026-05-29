@@ -33,11 +33,18 @@ namespace BlobPreviz
         public float stoppingDistance = 0.4f;
 
         [Header("Animator")]
-        [Tooltip("Float parameter name driving the idle→walk blend. Match your Animator Controller.")]
+        [Tooltip("Float parameter driving the idle→walk blend. Starter Assets expects values ~0 (idle) / ~2 (walk) / ~6 (run).")]
         public string speedParam = "Speed";
+
+        [Tooltip("Starter Assets needs this set to 1.0 while moving or animation playback is frozen. Leave blank to ignore.")]
+        public string motionSpeedParam = "MotionSpeed";
 
         [Tooltip("Bool parameter keeping the NPC in grounded state. Leave blank to ignore.")]
         public string groundedParam = "Grounded";
+
+        [Tooltip("Value passed to the Speed parameter when walking at full walkSpeed. " +
+                 "Check your blend tree thresholds — Starter Assets uses ~2 for walk.")]
+        public float animatorWalkSpeed = 2f;
 
         [Tooltip("Seconds to wait at each waypoint before moving on.")]
         [Range(0f, 5f)] public float waypointPause = 0f;
@@ -47,6 +54,7 @@ namespace BlobPreviz
         private Transform _currentTarget;
         private float _pauseTimer;
         private bool _waiting;
+        private bool _manualControl;
 
         void Start()
         {
@@ -76,6 +84,13 @@ namespace BlobPreviz
 
         void Update()
         {
+            // Manual control: animate but don't auto-pick waypoints.
+            if (_manualControl)
+            {
+                DriveAnimator();
+                return;
+            }
+
             if (_waiting)
             {
                 _pauseTimer -= Time.deltaTime;
@@ -103,6 +118,35 @@ namespace BlobPreviz
             DriveAnimator();
         }
 
+        // ── Public control API ───────────────────────────────────────────────
+
+        /// <summary>
+        /// Send the NPC to a specific world position, suspending random wandering.
+        /// Call ResumeWandering() to hand control back.
+        /// </summary>
+        public void SetManualDestination(Vector3 worldPos)
+        {
+            _manualControl = true;
+            _waiting       = false;
+            _currentTarget = null;
+            _agent.SetDestination(worldPos);
+        }
+
+        /// <summary>Re-enable random wandering from the current position.</summary>
+        public void ResumeWandering()
+        {
+            _manualControl = false;
+            PickNewTarget();
+        }
+
+        /// <summary>True when the agent has reached its current destination.</summary>
+        public bool HasArrived()
+        {
+            return _agent.isOnNavMesh
+                && !_agent.pathPending
+                && _agent.remainingDistance <= _agent.stoppingDistance + 0.05f;
+        }
+
         void PickNewTarget()
         {
             var next = waypointGroup.GetRandom(_currentTarget);
@@ -111,21 +155,20 @@ namespace BlobPreviz
             _agent.SetDestination(next.position);
         }
 
-        bool HasArrived()
-        {
-            return _agent.isOnNavMesh
-                && !_agent.pathPending
-                && _agent.remainingDistance <= _agent.stoppingDistance + 0.05f;
-        }
-
         void DriveAnimator()
         {
             if (_animator == null) return;
 
-            // desiredVelocity = where the agent *wants* to go this frame (pre-root-motion).
-            // Using velocity here would create a feedback loop with RootMotionToNavMesh.
-            float desiredSpeed = _agent.desiredVelocity.magnitude;
-            _animator.SetFloat(speedParam, desiredSpeed, 0.1f, Time.deltaTime);
+            // Normalise agent's desired speed (0–walkSpeed) to the animator's expected range
+            // (0–animatorWalkSpeed). Starter Assets blend tree uses ~2 for walk, not raw m/s.
+            float t = _agent.speed > 0f ? _agent.desiredVelocity.magnitude / _agent.speed : 0f;
+            float mappedSpeed = t * animatorWalkSpeed;
+            _animator.SetFloat(speedParam, mappedSpeed, 0.1f, Time.deltaTime);
+
+            // MotionSpeed must be > 0 or Starter Assets freezes animation playback entirely.
+            float motionSpeed = t > 0.01f ? 1f : 0f;
+            if (!string.IsNullOrEmpty(motionSpeedParam))
+                _animator.SetFloat(motionSpeedParam, motionSpeed, 0.1f, Time.deltaTime);
 
             if (!string.IsNullOrEmpty(groundedParam))
                 _animator.SetBool(groundedParam, true);
