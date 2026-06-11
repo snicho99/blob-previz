@@ -27,6 +27,7 @@ namespace BlobPreviz
 
         readonly List<GameObject> _npcs = new List<GameObject>();
         WaypointGroup _waypointGroup;
+        OscEmitter _oscEmitter;
         int _dealIndex;
 
         // ── Lifecycle ────────────────────────────────────────────────────────
@@ -40,6 +41,7 @@ namespace BlobPreviz
         void Start()
         {
             _waypointGroup = FindFirstObjectByType<WaypointGroup>();
+            _oscEmitter    = FindFirstObjectByType<OscEmitter>();
 
             // Adopt any NPCs already placed in the scene.
             foreach (var w in FindObjectsByType<NpcWanderer>(FindObjectsSortMode.None))
@@ -127,6 +129,8 @@ namespace BlobPreviz
             // Apply current speed settings immediately.
             if (ConfigManager.Instance != null)
                 ApplySpeedToNpc(go, ConfigManager.Instance.WanderingSpeed, ConfigManager.Instance.WanderingSpeedVariability);
+
+            _oscEmitter?.RefreshTrackers();
         }
 
         void DespawnLast()
@@ -135,6 +139,9 @@ namespace BlobPreviz
             int idx = _npcs.Count - 1;
             var go = _npcs[idx];
             _npcs.RemoveAt(idx);
+            // Refresh BEFORE Destroy so the tracker is absent from _trackers while the
+            // object is still alive — OscEmitter's removed-tracker exit check fires correctly.
+            _oscEmitter?.RefreshTrackers();
             if (go != null) Destroy(go);
         }
 

@@ -4,31 +4,28 @@ using UnityEngine;
 namespace BlobPreviz
 {
     /// <summary>
-    /// When two tracked people come within mergeThreshold (viewport space),
-    /// suppress both individual emits and fire a single merged blob instead.
-    /// Attach alongside OscEmitter.
+    /// When two tracked people come within mergeThreshold (normalised camera space),
+    /// suppresses both individual trackers and promotes the dominant one with a merged bbox.
+    ///
+    /// Execution order -1 ensures this runs before OscEmitter.LateUpdate so suppression
+    /// flags and bbox overrides are in place before messages are built.
     /// </summary>
+    [DefaultExecutionOrder(-1)]
     public class MergeSimulator : MonoBehaviour
     {
-        private SimulationConfig _config;
-        private OscEmitter _emitter;
-        private PersonTracker[] _trackers;
+        SimulationConfig _config;
+        PersonTracker[] _trackers;
 
         void Start()
         {
-            _config = GetComponent<OscEmitter>()?.config
-                   ?? FindFirstObjectByType<SimulationManager>()?.Config;
-            _emitter = GetComponent<OscEmitter>();
+            _config   = GetComponent<OscEmitter>()?.config
+                     ?? FindFirstObjectByType<SimulationManager>()?.Config;
             _trackers = FindObjectsByType<PersonTracker>(FindObjectsSortMode.None);
         }
 
         void LateUpdate()
         {
             if (_config == null || !_config.enableMergeSimulation) return;
-
-            // Reset merge state first.
-            foreach (var t in _trackers)
-                if (t.IsActive) t.SetMerged(false);
 
             var merged = new HashSet<PersonTracker>();
 
@@ -40,36 +37,31 @@ namespace BlobPreviz
                 {
                     if (!_trackers[j].IsActive || merged.Contains(_trackers[j])) continue;
 
-                    float dist = Vector2.Distance(_trackers[i].Centroid, _trackers[j].Centroid);
+                    float dist = Vector2.Distance(_trackers[i].Center, _trackers[j].Center);
                     if (dist < _config.mergeThreshold)
                     {
                         merged.Add(_trackers[i]);
                         merged.Add(_trackers[j]);
-                        EmitMergedBlob(_trackers[i], _trackers[j]);
+                        ApplyMerge(_trackers[i], _trackers[j]);
                     }
                 }
             }
-
-            // Suppress individual emits for merged pairs.
-            foreach (var t in merged)
-                t.SetMerged(true);
         }
 
-        void EmitMergedBlob(PersonTracker a, PersonTracker b)
+        void ApplyMerge(PersonTracker a, PersonTracker b)
         {
-            // Use whichever ID has been active longer (simulates tracker picking the dominant blob).
-            string id = a.TrackedTime >= b.TrackedTime ? a.TrackerId : b.TrackerId;
+            // Dominant tracker (tracked longer) stays visible with merged bbox.
+            // Subordinate is suppressed — no OSC messages of any kind this frame.
+            PersonTracker dominant   = a.TrackedTime >= b.TrackedTime ? a : b;
+            PersonTracker subordinate = dominant == a ? b : a;
 
-            float cx = (a.Centroid.x + b.Centroid.x) * 0.5f;
-            float cy = (a.Centroid.y + b.Centroid.y) * 0.5f;
-            float top    = Mathf.Min(a.BbTop,    b.BbTop);
-            float left   = Mathf.Min(a.BbLeft,   b.BbLeft);
-            float bottom = Mathf.Max(a.BbBottom,  b.BbBottom);
-            float right  = Mathf.Max(a.BbRight,   b.BbRight);
-            float trackedTime = Mathf.Max(a.TrackedTime, b.TrackedTime);
+            float xMin = Mathf.Min(a.XMin, b.XMin);
+            float yMin = Mathf.Min(a.YMin, b.YMin);
+            float xMax = Mathf.Max(a.XMax, b.XMax);
+            float yMax = Mathf.Max(a.YMax, b.YMax);
 
-            // Delegates to OscEmitter.SendBlob — the public method handles formatting and send.
-            _emitter.SendBlob(id, cx, cy, top, right, bottom, left, 1f, trackedTime);
+            dominant.SetMergedBbox(xMin, yMin, xMax, yMax);
+            subordinate.Suppress();
         }
     }
 }

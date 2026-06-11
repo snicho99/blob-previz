@@ -1,104 +1,130 @@
+using System;
+using System.Collections.Generic;
 using UnityEngine;
-using OscJack;
 
 namespace BlobPreviz
 {
     /// <summary>
-    /// Reads PersonTracker data each frame, applies noise, and fires OSC messages.
+    /// Implements the Blob V1.1 OSC protocol. See BLOB_PROTOCOL.md for the full spec.
     ///
-    /// Address pattern:
-    ///   /blob/tracker/{uuid}/confidence   float  0-1
-    ///   /blob/tracker/{uuid}/trackedtime  float  seconds
-    ///   /blob/tracker/{uuid}/bb/top       float  0-1 viewport, Y-down
-    ///   /blob/tracker/{uuid}/bb/right     float
-    ///   /blob/tracker/{uuid}/bb/bottom    float
-    ///   /blob/tracker/{uuid}/bb/left      float
-    ///   /blob/tracker/{uuid}/x            float  centroid, 0-1
-    ///   /blob/tracker/{uuid}/y            float
+    /// Each LateUpdate frame:
+    ///   - All active-tracker messages are packed into a single OSC bundle.
+    ///   - Tracker transitions are detected against last-frame state:
+    ///       inactive → active  : /blob/join
+    ///       active   → active  : /blob/move
+    ///       active   → inactive: /blob/exit   (always sent, never dropped)
+    ///   - Suppressed trackers (MergeSimulator) are skipped entirely — no exit sent.
+    ///   - Frame drops (if enabled in SimulationConfig) apply to join/move only.
     ///
-    /// When a person leaves the capture volume, their UUID simply goes silent.
-    /// The downstream experience owns the timeout/removal decision.
-    ///</summary>
+    /// Execution order -1 on MergeSimulator ensures it runs before this component's
+    /// LateUpdate so bbox overrides and suppression flags are set before we read them.
+    /// </summary>
+    [DefaultExecutionOrder(1)]
     public class OscEmitter : MonoBehaviour
     {
         public SimulationConfig config;
 
-        private OscClient _client;
-        private PersonTracker[] _trackers;
-        private TrackingNoiseLayer _noise;
+        OscBundleClient _bundle;
+        List<PersonTracker> _trackers = new List<PersonTracker>();
+        TrackingNoiseLayer _noise;
+
+        /// <summary>Session-level tracker GUID — fixed for the lifetime of the play session.</summary>
+        string _sessionGuid;
+
+        /// <summary>Trackers that were active at the end of the previous frame.</summary>
+        readonly HashSet<PersonTracker> _activeLastFrame = new HashSet<PersonTracker>();
 
         void Start()
         {
-            string ip   = ConfigManager.Instance != null ? ConfigManager.Instance.OscTargetIp : config.oscTargetIp;
-            int    port = ConfigManager.Instance != null ? ConfigManager.Instance.OscPort      : config.oscPort;
-            _client = new OscClient(ip, port);
-            _trackers = FindObjectsByType<PersonTracker>(FindObjectsSortMode.None);
+            _sessionGuid = Guid.NewGuid().ToString();
+
+            string ip   = ConfigManager.Instance?.OscTargetIp ?? config?.oscTargetIp ?? "127.0.0.1";
+            int    port = ConfigManager.Instance != null ? ConfigManager.Instance.OscPort : (config != null ? config.oscPort : 9000);
+            _bundle = new OscBundleClient(ip, port);
+
+            RefreshTrackers();
             _noise = GetComponent<TrackingNoiseLayer>();
 
             if (ConfigManager.Instance != null)
                 ConfigManager.Instance.OscSettingsChanged += OnOscSettingsChanged;
+
+            Debug.Log($"[OscEmitter] Session GUID: {_sessionGuid} → {ip}:{port}");
+        }
+
+        /// <summary>
+        /// Re-scans the scene for PersonTrackers. Call after spawning or despawning NPCs.
+        /// Exits are sent on the next LateUpdate for any active tracker that was removed.
+        /// </summary>
+        public void RefreshTrackers()
+        {
+            _trackers = new List<PersonTracker>(FindObjectsByType<PersonTracker>(FindObjectsSortMode.None));
         }
 
         void OnOscSettingsChanged()
-        {
-            Reconnect(ConfigManager.Instance.OscTargetIp, ConfigManager.Instance.OscPort);
-        }
+            => Reconnect(ConfigManager.Instance.OscTargetIp, ConfigManager.Instance.OscPort);
 
         public void Reconnect(string ip, int port)
         {
-            _client?.Dispose();
-            _client = new OscClient(ip, port);
+            _bundle?.Reconnect(ip, port);
             Debug.Log($"[OscEmitter] Reconnected → {ip}:{port}");
         }
 
         void LateUpdate()
         {
+            _bundle.BeginBundle();
+
+            var activeThisFrame = new HashSet<PersonTracker>();
+            var currentSet      = new HashSet<PersonTracker>(_trackers);
+
             foreach (var tracker in _trackers)
             {
-                if (!tracker.IsActive) continue;
+                if (tracker == null || tracker.IsSuppressed) continue;
 
-                if (config.enableFrameDrops && Random.value < config.frameDropProbability)
-                    continue;
+                bool wasActive = _activeLastFrame.Contains(tracker);
 
-                float cx = tracker.Centroid.x;
-                float cy = tracker.Centroid.y;
-                float top    = tracker.BbTop;
-                float right  = tracker.BbRight;
-                float bottom = tracker.BbBottom;
-                float left   = tracker.BbLeft;
-                float confidence = tracker.Confidence;
+                if (tracker.IsActive)
+                {
+                    activeThisFrame.Add(tracker);
 
-                if (_noise != null)
-                    _noise.Apply(ref cx, ref cy, ref top, ref right, ref bottom, ref left, ref confidence);
+                    // Frame drop applies to join/move only — exits are always reliable.
+                    if (config != null && config.enableFrameDrops && UnityEngine.Random.value < config.frameDropProbability)
+                        continue;
 
-                SendBlob(tracker.TrackerId, cx, cy, top, right, bottom, left, confidence, tracker.TrackedTime);
+                    float xMin = tracker.XMin, yMin = tracker.YMin;
+                    float xMax = tracker.XMax, yMax = tracker.YMax;
+                    _noise?.Apply(ref xMin, ref yMin, ref xMax, ref yMax);
+
+                    string address = wasActive ? "/blob/move" : "/blob/join";
+                    _bundle.AddJoinMove(address, _sessionGuid, tracker.BlobId,
+                        tracker.TrackedTime, xMin, yMin, xMax, yMax);
+                }
+                else if (wasActive)
+                {
+                    _bundle.AddExit(_sessionGuid, tracker.BlobId);
+                }
             }
-        }
 
-        public void SendBlob(string id,
-            float cx, float cy,
-            float top, float right, float bottom, float left,
-            float confidence, float trackedTime)
-        {
-            string prefix = $"/blob/tracker/{id}";
-            _client.Send(prefix + "/confidence",   confidence);
-            _client.Send(prefix + "/trackedtime",  trackedTime);
-            _client.Send(prefix + "/bb/top",       top);
-            _client.Send(prefix + "/bb/right",     right);
-            _client.Send(prefix + "/bb/bottom",    bottom);
-            _client.Send(prefix + "/bb/left",      left);
-            _client.Send(prefix + "/x",            cx);
-            _client.Send(prefix + "/y",            cy);
-        }
+            // Send exits for any tracker that was active but has since been removed
+            // (NPC despawned). If the object was destroyed (t == null), BlobId is
+            // unrecoverable — exit is silently dropped; acceptable for forced despawn.
+            foreach (var t in _activeLastFrame)
+            {
+                if (t != null && !currentSet.Contains(t))
+                    _bundle.AddExit(_sessionGuid, t.BlobId);
+            }
 
-        // No removal message. When a person leaves the capture volume, messages for
-        // their UUID simply stop. The downstream experience owns the timeout logic.
+            if (_bundle.HasMessages)
+                _bundle.Send();
+
+            _activeLastFrame.Clear();
+            _activeLastFrame.UnionWith(activeThisFrame);
+        }
 
         void OnDestroy()
         {
             if (ConfigManager.Instance != null)
                 ConfigManager.Instance.OscSettingsChanged -= OnOscSettingsChanged;
-            _client?.Dispose();
+            _bundle?.Dispose();
         }
     }
 }

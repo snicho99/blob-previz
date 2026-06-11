@@ -1,39 +1,60 @@
-using System;
 using UnityEngine;
 
 namespace BlobPreviz
 {
     /// <summary>
     /// Attach to the capsule that owns world position for a simulated person.
-    /// The rigged character mesh should be a child of this object.
+    /// Computes bounding box by projecting renderer AABB corners through the overhead camera.
+    ///
+    /// Blob IDs are session-scoped monotonic integers starting at 1, matching Blob V1.1.
+    /// A new ID is always assigned when re-entering the capture volume.
     /// </summary>
     public class PersonTracker : MonoBehaviour
     {
-        [Tooltip("The overhead orthographic camera that represents the RealSense view.")]
+        [Tooltip("The overhead camera that represents the RealSense view.")]
         public Camera overheadCamera;
 
-        [Tooltip("Renderers contributing to this person's bounding box. Leave empty to auto-collect from children.")]
+        [Tooltip("Renderers contributing to this person's bounding box. Auto-collected from children if empty.")]
         public Renderer[] trackedRenderers;
 
-        // Read by OscEmitter each frame.
-        public string TrackerId { get; private set; }
-        public bool IsActive { get; private set; }
+        // ── Public state read by OscEmitter ──────────────────────────────────
+
+        /// <summary>Session-unique integer ID. Never reused. Starts at 1.</summary>
+        public int  BlobId      { get; private set; }
+        public bool IsActive    { get; private set; }
         public float TrackedTime { get; private set; }
 
-        // Viewport-space data (0-1, origin top-left, Y down).
-        public Vector2 Centroid { get; private set; }
-        public float BbTop { get; private set; }
-        public float BbRight { get; private set; }
-        public float BbBottom { get; private set; }
-        public float BbLeft { get; private set; }
-        public float Confidence { get; private set; }
+        // Bounding box in normalised overhead-camera space (unbounded; values outside 0-1 possible).
+        // See BLOB_PROTOCOL.md — axis origin to be confirmed against live data.
+        public float XMin { get; private set; }
+        public float YMin { get; private set; }
+        public float XMax { get; private set; }
+        public float YMax { get; private set; }
 
-        private SimulationConfig _config;
-        private bool _wasInsideVolume;
+        /// <summary>Bounding box centre — convenience for distance checks.</summary>
+        public Vector2 Center => new Vector2((XMin + XMax) * 0.5f, (YMin + YMax) * 0.5f);
+
+        /// <summary>
+        /// Set true by MergeSimulator when this tracker is folded into a merged blob.
+        /// OscEmitter skips suppressed trackers entirely (no exit message either).
+        /// Cleared automatically each LateUpdate before OscEmitter reads it.
+        /// </summary>
+        public bool IsSuppressed { get; private set; }
+
+        // ── Private ──────────────────────────────────────────────────────────
+
+        static int _nextBlobId = 1;
+
+        SimulationConfig _config;
+        bool _wasInsideVolume;
+
+        // Bbox override set by MergeSimulator; applied instead of computed values.
+        bool _hasBboxOverride;
+        float _overrideXMin, _overrideYMin, _overrideXMax, _overrideYMax;
 
         void Awake()
         {
-            AssignNewId();
+            BlobId  = 0; // unassigned until first entry
             _config = FindFirstObjectByType<SimulationManager>()?.Config;
 
             if (trackedRenderers == null || trackedRenderers.Length == 0)
@@ -46,15 +67,13 @@ namespace BlobPreviz
 
             if (inside && !_wasInsideVolume)
             {
-                // Entered volume.
-                if (_config != null && _config.reassignIdOnReentry && _wasInsideVolume == false && TrackedTime > 0f)
-                    AssignNewId();
-                IsActive = true;
+                // Entered (or re-entered) the volume — always assign a fresh ID.
+                BlobId      = _nextBlobId++;
+                IsActive    = true;
                 TrackedTime = 0f;
             }
             else if (!inside && _wasInsideVolume)
             {
-                // Left volume.
                 IsActive = false;
             }
 
@@ -63,9 +82,37 @@ namespace BlobPreviz
             if (!IsActive) return;
 
             TrackedTime += Time.deltaTime;
-            ComputeViewportBounds();
-            Confidence = 1f; // Overridden by noise layer if enabled.
+
+            if (!_hasBboxOverride)
+                ComputeViewportBounds();
         }
+
+        void LateUpdate()
+        {
+            // Clear per-frame merge state so OscEmitter always reads fresh values.
+            IsSuppressed    = false;
+            _hasBboxOverride = false;
+        }
+
+        // ── Merge simulation API ─────────────────────────────────────────────
+
+        /// <summary>
+        /// Called by MergeSimulator to hide this tracker from OscEmitter for one frame.
+        /// No join/move/exit messages will be sent while suppressed.
+        /// </summary>
+        public void Suppress() => IsSuppressed = true;
+
+        /// <summary>
+        /// Called by MergeSimulator to override this tracker's bbox with a merged region.
+        /// </summary>
+        public void SetMergedBbox(float xMin, float yMin, float xMax, float yMax)
+        {
+            _hasBboxOverride = true;
+            XMin = xMin; YMin = yMin;
+            XMax = xMax; YMax = yMax;
+        }
+
+        // ── Internal ─────────────────────────────────────────────────────────
 
         void ComputeViewportBounds()
         {
@@ -78,10 +125,8 @@ namespace BlobPreviz
             {
                 if (r == null) continue;
                 var bounds = r.bounds;
-
-                // Sample the 8 corners of the world-space AABB.
                 Vector3 center = bounds.center;
-                Vector3 ext = bounds.extents;
+                Vector3 ext    = bounds.extents;
 
                 for (int i = 0; i < 8; i++)
                 {
@@ -91,8 +136,9 @@ namespace BlobPreviz
                         ((i & 4) == 0 ? -1 : 1) * ext.z);
 
                     Vector3 vp = overheadCamera.WorldToViewportPoint(corner);
-                    // Viewport is (0,0) bottom-left in Unity; flip Y so (0,0) is top-left.
-                    float vpX = vp.x;
+                    // Unity viewport: (0,0) = bottom-left. Flip Y so (0,0) = top-left.
+                    // Axis origin/direction to be confirmed against live tracker — see BLOB_PROTOCOL.md.
+                    float vpX =       vp.x;
                     float vpY = 1f - vp.y;
 
                     if (vpX < minX) minX = vpX;
@@ -102,11 +148,8 @@ namespace BlobPreviz
                 }
             }
 
-            BbLeft   = minX;
-            BbTop    = minY;
-            BbRight  = maxX;
-            BbBottom = maxY;
-            Centroid = new Vector2((minX + maxX) * 0.5f, (minY + maxY) * 0.5f);
+            XMin = minX; YMin = minY;
+            XMax = maxX; YMax = maxY;
         }
 
         bool IsInsideCaptureVolume()
@@ -114,13 +157,5 @@ namespace BlobPreviz
             if (_config == null) return true;
             return _config.captureVolume.Contains(transform.position);
         }
-
-        public void AssignNewId()
-        {
-            TrackerId = Guid.NewGuid().ToString();
-        }
-
-        // Called by MergeSimulator to temporarily suppress this tracker's individual emit.
-        public void SetMerged(bool merged) => IsActive = !merged;
     }
 }

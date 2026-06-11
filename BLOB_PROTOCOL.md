@@ -22,7 +22,7 @@ There are three message types covering the full lifecycle of a tracked object.
 
 Both messages share the same 8 arguments.
 
-**Type tag:** `,siiffffff`
+**Type tag:** `,siifffff`
 
 | # | Type | Description |
 |---|---|---|
@@ -37,7 +37,7 @@ Both messages share the same 8 arguments.
 
 > Bounding box values are in a **normalised but unbounded** coordinate space — values outside 0–1 have been observed (e.g. a ymin of `-0.04`) when a blob is partially outside the tracked area. Origin and axis direction to be confirmed against live data.
 
-> **Blob ID start value:** Live captures show IDs of `1`, `2`, etc. It is unclear whether the sequence begins at `0` (with blob 0 having exited before the capture) or at `1`. To be confirmed.
+> **Blob ID start value:** Live captures show IDs of `1`, `2`, etc. The sequence is treated as **starting at `1`** for this implementation.
 
 ---
 
