@@ -719,6 +719,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::BlobPreviz.OscEmitter
   config: {fileID: 11400000, guid: 4bab30e280259a04c8df9f991688651b, type: 2}
+  overheadCamera: {fileID: 0}
 --- !u!114 &582437438
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -2592,7 +2593,7 @@ Transform:
   m_GameObject: {fileID: 1462273964}
   serializedVersion: 2
   m_LocalRotation: {x: 0.7071068, y: -0, z: -0, w: 0.7071068}
-  m_LocalPosition: {x: 1, y: 3.9, z: 4.14}
+  m_LocalPosition: {x: 0, y: 3.9, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
