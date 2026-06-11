@@ -34,6 +34,7 @@ namespace BlobPreviz
         Light _light;
         SpoutReceiver _spout;
         Texture _lastApplied;
+        RenderTexture _squareRT;
 
         void Awake()
         {
@@ -70,12 +71,14 @@ namespace BlobPreviz
         {
             if (ConfigManager.Instance != null)
                 ConfigManager.Instance.SpoutSettingsChanged -= ApplySourceName;
+            _squareRT?.Release();
         }
 
         void Update()
         {
-            var tex = _spout.receivedTexture;
-            Apply(tex != null ? (Texture)tex : defaultCookie);
+            var raw = _spout.receivedTexture;
+            var source = raw != null ? (Texture)raw : defaultCookie;
+            Apply(Squarify(source));
         }
 
         void Apply(Texture tex)
@@ -83,6 +86,31 @@ namespace BlobPreviz
             if (tex == _lastApplied) return;
             _lastApplied = tex;
             _light.cookie = tex;
+        }
+
+        // Unity light cookies must be square. Center-crops non-square textures into
+        // a cached square RT sized to the smaller dimension. Already-square textures
+        // pass through without allocation.
+        Texture Squarify(Texture src)
+        {
+            if (src == null) return null;
+            if (src.width == src.height) return src;
+
+            int size = Mathf.Min(src.width, src.height);
+            if (_squareRT == null || _squareRT.width != size)
+            {
+                _squareRT?.Release();
+                _squareRT = new RenderTexture(size, size, 0, RenderTextureFormat.ARGB32);
+                _squareRT.Create();
+            }
+
+            // Scale and offset into the source UV so we sample the centred crop.
+            float scaleX  = (float)size / src.width;
+            float scaleY  = (float)size / src.height;
+            float offsetX = (1f - scaleX) * 0.5f;
+            float offsetY = (1f - scaleY) * 0.5f;
+            Graphics.Blit(src, _squareRT, new Vector2(scaleX, scaleY), new Vector2(offsetX, offsetY));
+            return _squareRT;
         }
 
         void ApplySourceName()

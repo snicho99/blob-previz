@@ -21,10 +21,15 @@ namespace BlobPreviz
         public event Action OscSettingsChanged;
         public event Action NpcSettingsChanged;
         public event Action SpoutSettingsChanged;
+        public event Action DepthSettingsChanged;
 
         // ── Backing fields ───────────────────────────────────────────────────
         string _spoutSourceName         = "";
         string _oscTargetIp             = "127.0.0.1";
+        // depth
+        string _depthSpoutName          = "BlobPrevizDepth";
+        float  _depthRangeMin           = 0.3f;
+        float  _depthRangeMax           = 5.0f;
         int    _oscPort                 = 9000;
         int    _npcCount                = 2;
         bool   _wanderingEnabled        = true;
@@ -49,6 +54,23 @@ namespace BlobPreviz
         {
             get => _oscPort;
             set { _oscPort = Mathf.Clamp(value, 1, 65535); Save(); OscSettingsChanged?.Invoke(); }
+        }
+
+        // ── Depth properties ─────────────────────────────────────────────────
+        public string DepthSpoutName
+        {
+            get => _depthSpoutName;
+            set { _depthSpoutName = value ?? ""; Save(); DepthSettingsChanged?.Invoke(); }
+        }
+        public float DepthRangeMin
+        {
+            get => _depthRangeMin;
+            set { _depthRangeMin = Mathf.Max(0f, value); Save(); DepthSettingsChanged?.Invoke(); }
+        }
+        public float DepthRangeMax
+        {
+            get => _depthRangeMax;
+            set { _depthRangeMax = Mathf.Max(_depthRangeMin + 0.1f, value); Save(); DepthSettingsChanged?.Invoke(); }
         }
 
         // ── NPC properties ───────────────────────────────────────────────────
@@ -113,8 +135,11 @@ namespace BlobPreviz
             try
             {
                 var d = IniParser.Read(path);
-                _spoutSourceName           = d.GetString("Spout", "SourceName",       _spoutSourceName);
-                _oscTargetIp               = d.GetString("OSC",  "TargetIP",         _oscTargetIp);
+                _spoutSourceName           = d.GetString("Spout",  "SourceName",       _spoutSourceName);
+                _oscTargetIp               = d.GetString("OSC",   "TargetIP",         _oscTargetIp);
+                _depthSpoutName            = d.GetString("Depth", "SpoutName",        _depthSpoutName);
+                _depthRangeMin             = d.GetFloat ("Depth", "RangeMin",         _depthRangeMin);
+                _depthRangeMax             = d.GetFloat ("Depth", "RangeMax",         _depthRangeMax);
                 _oscPort                   = d.GetInt   ("OSC",  "Port",              _oscPort);
                 _npcCount                  = d.GetInt   ("NPCs", "Count",             _npcCount);
                 _wanderingEnabled          = d.GetBool  ("NPCs", "WanderingEnabled",  _wanderingEnabled);
@@ -152,6 +177,12 @@ namespace BlobPreviz
                         ["WanderingSpeed"]   = _wanderingSpeed.ToString("F2", CultureInfo.InvariantCulture),
                         ["SpeedVariability"] = _wanderingSpeedVariability.ToString("F2", CultureInfo.InvariantCulture),
                         ["Visible"]          = _npcVisible ? "true" : "false",
+                    },
+                    ["Depth"] = new Dictionary<string, string>
+                    {
+                        ["SpoutName"] = _depthSpoutName,
+                        ["RangeMin"]  = _depthRangeMin.ToString("F2", CultureInfo.InvariantCulture),
+                        ["RangeMax"]  = _depthRangeMax.ToString("F2", CultureInfo.InvariantCulture),
                     },
                 };
                 IniParser.Write(path, data);

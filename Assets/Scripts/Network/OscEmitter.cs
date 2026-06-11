@@ -24,9 +24,14 @@ namespace BlobPreviz
     {
         public SimulationConfig config;
 
+        [Tooltip("Overhead camera used to read near/far clip planes for depth config messages.")]
+        public Camera overheadCamera;
+
         OscBundleClient _bundle;
         List<PersonTracker> _trackers = new List<PersonTracker>();
         TrackingNoiseLayer _noise;
+
+        float _depthConfigTimer;
 
         /// <summary>Session-level tracker GUID — fixed for the lifetime of the play session.</summary>
         string _sessionGuid;
@@ -46,8 +51,12 @@ namespace BlobPreviz
             _noise = GetComponent<TrackingNoiseLayer>();
 
             if (ConfigManager.Instance != null)
-                ConfigManager.Instance.OscSettingsChanged += OnOscSettingsChanged;
+            {
+                ConfigManager.Instance.OscSettingsChanged   += OnOscSettingsChanged;
+                ConfigManager.Instance.DepthSettingsChanged += OnDepthSettingsChanged;
+            }
 
+            SendDepthConfig(); // Announce immediately on start
             Debug.Log($"[OscEmitter] Session GUID: {_sessionGuid} → {ip}:{port}");
         }
 
@@ -62,6 +71,25 @@ namespace BlobPreviz
 
         void OnOscSettingsChanged()
             => Reconnect(ConfigManager.Instance.OscTargetIp, ConfigManager.Instance.OscPort);
+
+        void OnDepthSettingsChanged()
+        {
+            SendDepthConfig();
+            _depthConfigTimer = 1f; // Reset heartbeat so we don't double-send
+        }
+
+        void SendDepthConfig()
+        {
+            if (overheadCamera == null || ConfigManager.Instance == null) return;
+            _bundle.BeginBundle();
+            _bundle.AddDepthConfig(
+                ConfigManager.Instance.DepthSpoutName,
+                ConfigManager.Instance.DepthRangeMin,
+                ConfigManager.Instance.DepthRangeMax,
+                overheadCamera.nearClipPlane,
+                overheadCamera.farClipPlane);
+            _bundle.Send();
+        }
 
         public void Reconnect(string ip, int port)
         {
@@ -118,12 +146,23 @@ namespace BlobPreviz
 
             _activeLastFrame.Clear();
             _activeLastFrame.UnionWith(activeThisFrame);
+
+            // Depth config heartbeat — 1 Hz
+            _depthConfigTimer -= Time.deltaTime;
+            if (_depthConfigTimer <= 0f)
+            {
+                _depthConfigTimer = 1f;
+                SendDepthConfig();
+            }
         }
 
         void OnDestroy()
         {
             if (ConfigManager.Instance != null)
-                ConfigManager.Instance.OscSettingsChanged -= OnOscSettingsChanged;
+            {
+                ConfigManager.Instance.OscSettingsChanged   -= OnOscSettingsChanged;
+                ConfigManager.Instance.DepthSettingsChanged -= OnDepthSettingsChanged;
+            }
             _bundle?.Dispose();
         }
     }

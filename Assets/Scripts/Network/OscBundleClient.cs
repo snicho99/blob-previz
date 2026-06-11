@@ -89,6 +89,25 @@ namespace BlobPreviz
         }
 
         /// <summary>
+        /// Adds a /camera/depth/config message.
+        /// Type tag: ,sffff
+        /// </summary>
+        public void AddDepthConfig(string spoutName, float rangeMin, float rangeMax, float nearClip, float farClip)
+        {
+            int sizeSlot = ReserveSizeSlot();
+
+            AppendString("/camera/depth/config");
+            AppendString(",sffff");
+            AppendString(spoutName);
+            AppendFloat(rangeMin);
+            AppendFloat(rangeMax);
+            AppendFloat(nearClip);
+            AppendFloat(farClip);
+
+            WriteSize(sizeSlot);
+        }
+
+        /// <summary>
         /// Adds a /blob/exit message.
         /// Type tag: ,sii
         /// </summary>
